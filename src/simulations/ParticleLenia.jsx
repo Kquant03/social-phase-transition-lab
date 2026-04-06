@@ -9,10 +9,10 @@ import { useState, useEffect, useRef, useCallback } from "react";
 // ════════════════════════════════════════════════════════════════════
 
 const PRESETS = {
-  orbium: { name: "Orbium (Glider)", mu_k: 4.0, sigma_k: 1.0, w_k: 0.022, mu_g: 0.6, sigma_g: 0.15, c_rep: 1.0, n: 200, species: 1 },
-  mushroom: { name: "Mushroom", mu_k: 4.3, sigma_k: 1.1, w_k: 0.020, mu_g: 0.23, sigma_g: 0.06, c_rep: 1.0, n: 300, species: 1 },
-  swarm: { name: "Swarm", mu_k: 2.75, sigma_k: 1.25, w_k: 0.026, mu_g: 0.7, sigma_g: 0.167, c_rep: 1.0, n: 400, species: 1 },
-  multispecies: { name: "Multi-Species", mu_k: 3.5, sigma_k: 1.0, w_k: 0.024, mu_g: 0.5, sigma_g: 0.12, c_rep: 1.0, n: 500, species: 3 },
+  orbium: { name: "Orbium (Glider)", mu_k: 40, sigma_k: 10, w_k: 0.0015, mu_g: 0.14, sigma_g: 0.04, c_rep: 2.0, n: 200, species: 1 },
+  mushroom: { name: "Mushroom", mu_k: 50, sigma_k: 12, w_k: 0.0012, mu_g: 0.10, sigma_g: 0.03, c_rep: 2.0, n: 300, species: 1 },
+  swarm: { name: "Swarm", mu_k: 35, sigma_k: 15, w_k: 0.0018, mu_g: 0.18, sigma_g: 0.05, c_rep: 1.5, n: 400, species: 1 },
+  multispecies: { name: "Multi-Species", mu_k: 45, sigma_k: 10, w_k: 0.0014, mu_g: 0.12, sigma_g: 0.035, c_rep: 2.0, n: 500, species: 3 },
 };
 
 const SPECIES_COLORS = [
@@ -55,51 +55,63 @@ function step(particles, params, W, H, dt) {
   const { px, py, vx, vy, species, n } = particles;
   const { mu_k, sigma_k, w_k, mu_g, sigma_g, c_rep } = params;
   const maxR = mu_k + 3 * sigma_k;
+  const repRadius = mu_k * 0.4; // repulsion within 40% of kernel peak
 
+  // First pass: compute field U at each particle
+  const U = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      let dx = px[j] - px[i];
+      let dy = py[j] - py[i];
+      if (dx > W / 2) dx -= W; if (dx < -W / 2) dx += W;
+      if (dy > H / 2) dy -= H; if (dy < -H / 2) dy += H;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > maxR) continue;
+      const K = gaussianShellKernel(dist, mu_k, sigma_k, w_k);
+      U[i] += K;
+      U[j] += K;
+    }
+  }
+
+  // Second pass: compute forces from growth gradient + repulsion
   for (let i = 0; i < n; i++) {
     let fx = 0, fy = 0;
-    let U = 0; // field value at particle i
-
     for (let j = 0; j < n; j++) {
       if (i === j) continue;
       let dx = px[j] - px[i];
       let dy = py[j] - py[i];
-      // Wrap
       if (dx > W / 2) dx -= W; if (dx < -W / 2) dx += W;
       if (dy > H / 2) dy -= H; if (dy < -H / 2) dy += H;
       const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < 0.01 || dist > maxR + 2) continue;
+      if (dist < 0.1 || dist > maxR) continue;
       const nx = dx / dist, ny = dy / dist;
 
-      // Kernel contribution to field
-      const K = gaussianShellKernel(dist, mu_k, sigma_k, w_k);
-      U += K;
-
-      // Repulsion
-      if (dist < 1.0) {
-        const rep = c_rep * (1.0 - dist);
+      // Repulsion: linear ramp within repRadius
+      if (dist < repRadius) {
+        const rep = c_rep * (1.0 - dist / repRadius);
         fx -= rep * nx;
         fy -= rep * ny;
       }
 
-      // Kernel gradient for growth-field gradient ascent
+      // Growth gradient: move toward regions of better growth
+      const K = gaussianShellKernel(dist, mu_k, sigma_k, w_k);
       const dK_dr = K * (-(dist - mu_k)) / (sigma_k * sigma_k);
-      const G = growthFunction(U, mu_g, sigma_g);
-      // Approximate: move toward higher growth
-      fx += dK_dr * nx * 0.5;
-      fy += dK_dr * ny * 0.5;
+      fx += dK_dr * nx * 0.3;
+      fy += dK_dr * ny * 0.3;
     }
 
-    // Growth-based force (simplified gradient ascent)
-    const G = growthFunction(U, mu_g, sigma_g);
-    vx[i] = vx[i] * 0.1 + fx * dt + G * vx[i] * 0.01;
-    vy[i] = vy[i] * 0.1 + fy * dt + G * vy[i] * 0.01;
+    // Scale force by growth function (good density = move more coherently)
+    const G = growthFunction(U[i], mu_g, sigma_g);
+    const growthBoost = 1.0 + Math.max(0, G) * 2.0;
+
+    vx[i] = vx[i] * 0.5 + fx * dt * growthBoost;
+    vy[i] = vy[i] * 0.5 + fy * dt * growthBoost;
 
     // Clamp velocity
     const speed = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
-    if (speed > 2.0) {
-      vx[i] = (vx[i] / speed) * 2.0;
-      vy[i] = (vy[i] / speed) * 2.0;
+    if (speed > 5.0) {
+      vx[i] = (vx[i] / speed) * 5.0;
+      vy[i] = (vy[i] / speed) * 5.0;
     }
   }
 
@@ -134,12 +146,12 @@ export default function ParticleLenia() {
   const animRef = useRef(null);
   const [running, setRunning] = useState(true);
   const [preset, setPreset] = useState("orbium");
-  const [mu_k, setMuK] = useState(4.0);
-  const [sigma_k, setSigmaK] = useState(1.0);
-  const [w_k, setWK] = useState(0.022);
-  const [mu_g, setMuG] = useState(0.6);
-  const [sigma_g, setSigmaG] = useState(0.15);
-  const [c_rep, setCRep] = useState(1.0);
+  const [mu_k, setMuK] = useState(40);
+  const [sigma_k, setSigmaK] = useState(10);
+  const [w_k, setWK] = useState(0.0015);
+  const [mu_g, setMuG] = useState(0.14);
+  const [sigma_g, setSigmaG] = useState(0.04);
+  const [c_rep, setCRep] = useState(2.0);
   const [nParticles, setNParticles] = useState(200);
   const [numSpecies, setNumSpecies] = useState(1);
   const [frameCount, setFrameCount] = useState(0);
@@ -237,12 +249,12 @@ export default function ParticleLenia() {
             ))}
           </div>
 
-          <Slider label="Kernel μ" value={mu_k} onChange={setMuK} min={1} max={8} step={0.1} color="#f59e0b" desc="Peak radius of shell kernel" />
-          <Slider label="Kernel σ" value={sigma_k} onChange={setSigmaK} min={0.1} max={3} step={0.05} color="#f59e0b" desc="Width of shell kernel" />
-          <Slider label="Kernel w" value={w_k} onChange={setWK} min={0.001} max={0.05} step={0.001} color="#f59e0b" desc="Kernel amplitude" />
-          <Slider label="Growth μ" value={mu_g} onChange={setMuG} min={0.05} max={1.0} step={0.01} color="#22d3ee" desc="Optimal field density" />
-          <Slider label="Growth σ" value={sigma_g} onChange={setSigmaG} min={0.01} max={0.3} step={0.005} color="#22d3ee" desc="Growth function width" />
-          <Slider label="Repulsion" value={c_rep} onChange={setCRep} min={0} max={3} step={0.1} color="#ff6b6b" desc="Short-range repulsion" />
+          <Slider label="Kernel μ" value={mu_k} onChange={setMuK} min={10} max={80} step={1} color="#f59e0b" desc="Peak radius of shell kernel" />
+          <Slider label="Kernel σ" value={sigma_k} onChange={setSigmaK} min={2} max={30} step={1} color="#f59e0b" desc="Width of shell kernel" />
+          <Slider label="Kernel w" value={w_k} onChange={setWK} min={0.0002} max={0.005} step={0.0001} color="#f59e0b" desc="Kernel amplitude" />
+          <Slider label="Growth μ" value={mu_g} onChange={setMuG} min={0.02} max={0.4} step={0.005} color="#22d3ee" desc="Optimal field density" />
+          <Slider label="Growth σ" value={sigma_g} onChange={setSigmaG} min={0.005} max={0.1} step={0.002} color="#22d3ee" desc="Growth function width" />
+          <Slider label="Repulsion" value={c_rep} onChange={setCRep} min={0} max={5} step={0.1} color="#ff6b6b" desc="Short-range repulsion" />
 
           <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
             <button onClick={() => setRunning(!running)} style={{

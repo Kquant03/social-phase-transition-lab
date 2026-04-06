@@ -65,11 +65,11 @@ function stepPPS(particles, W, H, alpha, beta, senseRadius, velocity) {
 }
 
 const PRESETS = {
-  cells: { name: "Cell Life", alpha: 180, beta: 17, sense: 5, vel: 0.67, n: 800, desc: "Classic cell formation & division" },
-  worms: { name: "Worms", alpha: 90, beta: 12, sense: 8, vel: 0.8, n: 600, desc: "Elongated worm-like structures" },
-  swirls: { name: "Swirls", alpha: 120, beta: 20, sense: 6, vel: 0.5, n: 700, desc: "Rotating vortex patterns" },
-  crystals: { name: "Crystals", alpha: 60, beta: 8, sense: 10, vel: 0.4, n: 500, desc: "Rigid crystalline formations" },
-  gas: { name: "Gas", alpha: 180, beta: 30, sense: 4, vel: 1.0, n: 600, desc: "Diffuse gas-like behavior" },
+  cells: { name: "Cell Life", alpha: 180, beta: 17, sense: 30, vel: 0.67, n: 800, desc: "Classic cell formation & division" },
+  worms: { name: "Worms", alpha: 90, beta: 12, sense: 40, vel: 0.8, n: 600, desc: "Elongated worm-like structures" },
+  swirls: { name: "Swirls", alpha: 120, beta: 20, sense: 35, vel: 0.5, n: 700, desc: "Rotating vortex patterns" },
+  crystals: { name: "Crystals", alpha: 60, beta: 8, sense: 50, vel: 0.4, n: 500, desc: "Rigid crystalline formations" },
+  gas: { name: "Gas", alpha: 180, beta: 30, sense: 25, vel: 1.0, n: 600, desc: "Diffuse gas-like behavior" },
 };
 
 export default function PrimordialParticles() {
@@ -80,7 +80,7 @@ export default function PrimordialParticles() {
   const [running, setRunning] = useState(true);
   const [alpha, setAlpha] = useState(180);
   const [beta, setBeta] = useState(17);
-  const [senseRadius, setSenseRadius] = useState(5);
+  const [senseRadius, setSenseRadius] = useState(30);
   const [velocity, setVelocity] = useState(0.67);
   const [nParticles, setNParticles] = useState(800);
   const [preset, setPreset] = useState("cells");
@@ -231,7 +231,7 @@ export default function PrimordialParticles() {
               <span style={{ fontSize: 9, color: "#5a6b8a", letterSpacing: "0.08em" }}>SENSE RADIUS</span>
               <span style={{ fontSize: 12, color: "#22d3ee", fontWeight: 600 }}>{senseRadius}</span>
             </div>
-            <input type="range" min={2} max={15} step={1} value={senseRadius} onChange={e => setSenseRadius(parseInt(e.target.value))}
+            <input type="range" min={10} max={80} step={2} value={senseRadius} onChange={e => setSenseRadius(parseInt(e.target.value))}
               style={{ width: "100%", height: 3, appearance: "none", background: "#1a2236", borderRadius: 2, cursor: "pointer" }} />
           </div>
 
