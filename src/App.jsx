@@ -1,4 +1,4 @@
-import { useState, lazy, Suspense } from "react";
+import { useState, useRef, useEffect, lazy, Suspense } from "react";
 
 const SocialPhaseTransitionLab = lazy(() => import("./simulations/SocialPhaseTransitionLab.jsx"));
 const ParticleLenia = lazy(() => import("./simulations/ParticleLenia.jsx"));
@@ -83,42 +83,145 @@ export default function App() {
 
 function LandingPage({ onSelect }) {
   const [hovered, setHovered] = useState(null);
+  const heroCanvasRef = useRef(null);
+  const heroParticlesRef = useRef(null);
+
+  // Live hero simulation - a gentle multi-species particle dance
+  useEffect(() => {
+    const canvas = heroCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const W = canvas.width, H = canvas.height;
+    const N = 180;
+    const TYPES = 5;
+    const colors = [
+      [78, 205, 196, 0.7],   // teal
+      [167, 139, 250, 0.7],  // purple
+      [245, 158, 11, 0.6],   // amber
+      [236, 72, 153, 0.6],   // pink
+      [52, 211, 153, 0.6],   // emerald
+    ];
+    // Init
+    const px = new Float32Array(N), py = new Float32Array(N);
+    const vx = new Float32Array(N), vy = new Float32Array(N);
+    const types = new Uint8Array(N);
+    for (let i = 0; i < N; i++) {
+      px[i] = Math.random() * W;
+      py[i] = Math.random() * H;
+      vx[i] = (Math.random() - 0.5) * 0.5;
+      vy[i] = (Math.random() - 0.5) * 0.5;
+      types[i] = Math.floor(Math.random() * TYPES);
+    }
+    // Interaction matrix - gentle orbits
+    const mat = [
+      [ 0.0,  0.3, -0.1,  0.2, -0.2],
+      [-0.2,  0.0,  0.3, -0.1,  0.2],
+      [ 0.2, -0.2,  0.0,  0.3, -0.1],
+      [-0.1,  0.2, -0.2,  0.0,  0.3],
+      [ 0.3, -0.1,  0.2, -0.2,  0.0],
+    ];
+    const rMax = 120, beta = 0.3, friction = 0.6;
+
+    let raf;
+    const loop = () => {
+      // Physics
+      for (let i = 0; i < N; i++) {
+        let fx = 0, fy = 0;
+        for (let j = 0; j < N; j++) {
+          if (i === j) continue;
+          let dx = px[j] - px[i], dy = py[j] - py[i];
+          if (dx > W/2) dx -= W; if (dx < -W/2) dx += W;
+          if (dy > H/2) dy -= H; if (dy < -H/2) dy += H;
+          const d = Math.sqrt(dx*dx + dy*dy);
+          if (d > rMax || d < 0.5) continue;
+          const r = d / rMax, nx = dx/d, ny = dy/d;
+          let f;
+          if (r < beta) { f = r/beta - 1; }
+          else { f = mat[types[i]][types[j]] * (1 - Math.abs(1+beta-2*r)/(1-beta)); }
+          fx += f * nx; fy += f * ny;
+        }
+        vx[i] = vx[i] * friction + fx * 0.4;
+        vy[i] = vy[i] * friction + fy * 0.4;
+      }
+      for (let i = 0; i < N; i++) {
+        px[i] = ((px[i] + vx[i]) % W + W) % W;
+        py[i] = ((py[i] + vy[i]) % H + H) % H;
+      }
+
+      // Render
+      ctx.fillStyle = "rgba(6,10,18,0.08)";
+      ctx.fillRect(0, 0, W, H);
+      for (let i = 0; i < N; i++) {
+        const c = colors[types[i]];
+        const speed = Math.sqrt(vx[i]*vx[i] + vy[i]*vy[i]);
+        const a = c[3] * Math.min(1, 0.3 + speed * 0.4);
+        // Glow
+        ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${a * 0.12})`;
+        ctx.beginPath();
+        ctx.arc(px[i], py[i], 8 + speed * 2, 0, Math.PI * 2);
+        ctx.fill();
+        // Core
+        ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+        ctx.beginPath();
+        ctx.arc(px[i], py[i], 1.5 + speed * 0.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
   return (
     <div style={{
       minHeight: "100vh", background: "#060a12", color: "#d4dae8",
       display: "flex", flexDirection: "column", alignItems: "center",
       fontFamily: "'DM Sans', sans-serif",
     }}>
-      {/* Hero */}
-      <div style={{ textAlign: "center", padding: "80px 20px 40px", maxWidth: 700 }}>
-        <div style={{
-          fontSize: 11, letterSpacing: "0.35em", color: "#5a6b8a",
-          fontFamily: "'JetBrains Mono', monospace", marginBottom: 20,
-          textTransform: "uppercase",
-        }}>
-          Replete AI · Teármann Research Ecosystem
-        </div>
-        <h1 style={{
-          fontSize: 64, fontWeight: 300, letterSpacing: "0.15em",
-          fontFamily: "'Cormorant Garamond', serif", margin: 0,
-          background: "linear-gradient(135deg, #4ecdc4, #a78bfa, #f59e0b)",
-          WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
-          lineHeight: 1.1,
-        }}>
-          GENESIS
-        </h1>
-        <div style={{
-          fontSize: 14, color: "#5a6b8a", marginTop: 16, lineHeight: 1.7,
-          fontFamily: "'DM Sans', sans-serif", fontWeight: 300,
-        }}>
-          A multi-dimensional artificial life laboratory.<br />
-          Five substrates. One garden. Infinite structures.
-        </div>
-        <div style={{
-          marginTop: 20, fontSize: 10, color: "#3a4b6a",
-          fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.08em",
-        }}>
-          Ising · Lenia · Gray-Scott · Particle Life · Primordial Particles
+      {/* Hero with live simulation backdrop */}
+      <div style={{ position: "relative", width: "100%", overflow: "hidden" }}>
+        <canvas
+          ref={heroCanvasRef}
+          width={960}
+          height={400}
+          style={{
+            position: "absolute", top: 0, left: "50%", transform: "translateX(-50%)",
+            width: "100%", maxWidth: 960, height: 400,
+            opacity: 0.6,
+            maskImage: "radial-gradient(ellipse 80% 90% at 50% 50%, black 30%, transparent 70%)",
+            WebkitMaskImage: "radial-gradient(ellipse 80% 90% at 50% 50%, black 30%, transparent 70%)",
+          }}
+        />
+        <div style={{ position: "relative", textAlign: "center", padding: "80px 20px 40px", maxWidth: 700, margin: "0 auto", zIndex: 1 }}>
+          <div style={{
+            fontSize: 11, letterSpacing: "0.35em", color: "#5a6b8a",
+            fontFamily: "'JetBrains Mono', monospace", marginBottom: 20,
+            textTransform: "uppercase",
+          }}>
+            Replete AI · Teármann Research Ecosystem
+          </div>
+          <h1 style={{
+            fontSize: 64, fontWeight: 300, letterSpacing: "0.15em",
+            fontFamily: "'Cormorant Garamond', serif", margin: 0,
+            background: "linear-gradient(135deg, #4ecdc4, #a78bfa, #f59e0b)",
+            WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+            lineHeight: 1.1,
+          }}>
+            GENESIS
+          </h1>
+          <div style={{
+            fontSize: 14, color: "#8a9bba", marginTop: 16, lineHeight: 1.7,
+            fontFamily: "'DM Sans', sans-serif", fontWeight: 300,
+          }}>
+            A multi-dimensional artificial life laboratory.<br />
+            Five substrates. One garden. Infinite structures.
+          </div>
+          <div style={{
+            marginTop: 20, fontSize: 10, color: "#4a5b7a",
+            fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.08em",
+          }}>
+            Ising · Lenia · Gray-Scott · Particle Life · Primordial Particles
+          </div>
         </div>
       </div>
 
