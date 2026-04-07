@@ -80,7 +80,7 @@ A^(t+dt) = clip(A^t + dt·G(U), 0, 1)      State update
 
 **Eight species:** Orbium (glider soliton) · Bicaudatus (two-tailed) · Ignis (fire form) · Ignis ×2 (fire two-tailed) · Laxus (loose oscillator) · Vagus (large-field wanderer) · Soup (ecosystem) · **Ghost** (sustained edge-of-chaos morphing)
 
-**The Ghost species** seeds the Ignis morphology (tuned for σ=0.012) under deliberately mismatched parameters (σ=0.015, R=15). The organism remembers its shape but cannot reach it — producing perpetual morphing, field-mediated inter-organism communication, and emergent network ripples across populations of 16 individuals.
+**The Ghost species** seeds the Ignis morphology (tuned for σ=0.012) under deliberately mismatched parameters (σ=0.015, R=15). The organism remembers its shape but cannot reach it — producing perpetual morphing, field-mediated inter-organism communication, and emergent network ripples across populations of 16 individuals. [**→ Read the full Ghost species paper**](docs/ghost_species.pdf)
 
 <br clear="right" />
 
@@ -173,6 +173,7 @@ genesis-phase-transitions/
 │       └── PrimordialParticles.jsx         # ◇ Primordial Particles
 ├── docs/
 │   ├── GENESIS_MANIFESTO.docx              # Full technical manifesto
+│   ├── ghost_species.pdf                   # Ghost species paper (phantasma)
 │   ├── tsarev_2019.pdf                     # Source paper
 │   └── gifs/                               # README animations
 └── .github/workflows/deploy.yml            # Auto GitHub Pages deploy
