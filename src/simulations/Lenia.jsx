@@ -130,11 +130,11 @@ vec3 applyPalette(float t) {
   t = t * t * (3.0 - 2.0 * t);
   if (u_palette == 0) {
     return gradient(t,
-      vec3(0.008, 0.012, 0.055),
-      vec3(0.03, 0.10, 0.32),
-      vec3(0.12, 0.42, 0.52),
-      vec3(0.72, 0.48, 0.10),
-      vec3(1.0, 0.94, 0.82));
+      vec3(0.005, 0.008, 0.045),
+      vec3(0.02, 0.08, 0.28),
+      vec3(0.06, 0.36, 0.46),
+      vec3(0.88, 0.56, 0.06),
+      vec3(1.0, 0.96, 0.88));
   } else if (u_palette == 1) {
     return gradient(t,
       vec3(0.0, 0.0, 0.015),
@@ -164,53 +164,94 @@ vec3 applyPalette(float t) {
       vec3(0.18, 0.58, 0.62),
       vec3(0.72, 0.96, 0.92));
   }
-  // palette == 5 is Lantern — handled in main() via ghost path
+  // palette 5/6 handled in main() via ghost path
   return vec3(t);
 }
 
-vec3 lanternPalette(float state, float trail, float growth, float mem) {
-  float delta = abs(state - mem);
-  float coherence = min(state, mem);
-  float dissolution = max(0.0, mem - state);
-  float emergence = max(0.0, state - mem);
-  float activity = abs(growth - 0.5) * 2.0;
+// ── IQ cosine palette: spectral rainbow ──
+vec3 spectrum(float t) {
+  return clamp(vec3(0.5) + vec3(0.5) * cos(6.28318 * (vec3(1.0) * t + vec3(0.0, 0.33, 0.67))), 0.0, 1.0);
+}
 
-  // Deep indigo void
-  vec3 col = vec3(0.006, 0.004, 0.03);
-
-  // σ-landscape tint (subtle)
+// ── Lantern palette: gold cores, violet edges, iridescent rims ──
+// Coloring is driven by DENSITY and ACTIVITY, not positional memory.
+// Memory only creates faint afterimages at spawn points.
+vec3 lanternPalette(float state, float trail, float growth, float potential, float mem) {
+  // Deep indigo void with subtle σ-landscape tint
+  vec3 col = vec3(0.004, 0.003, 0.022);
   if (u_ghostMode > 0.5) {
     float sig = texture(u_sigmaField, v_uv).r;
     float sigRatio = sig / max(u_baseSigma, 0.001);
-    // Tight σ = deeper purple, loose σ = teal hint
-    col += mix(vec3(0.015, 0.005, 0.04), vec3(0.005, 0.025, 0.03),
-      clamp((sigRatio - 0.7) / 0.6, 0.0, 1.0)) * 0.6;
+    col += mix(vec3(0.012, 0.004, 0.035), vec3(0.004, 0.018, 0.022),
+      clamp((sigRatio - 0.7) / 0.6, 0.0, 1.0)) * 0.35;
   }
 
-  // Ghost afterimage — memory lingering without substance
-  col += vec3(0.18, 0.4, 0.75) * dissolution * 0.45;
+  // Memory afterimage — faint pale blue wisps where creatures WERE (not where they ARE)
+  float ghostWisp = max(0.0, mem - state * 3.0);
+  col += vec3(0.12, 0.28, 0.55) * ghostWisp * 0.25;
 
-  // Coherence lantern — where the remembered shape is HELD
-  // This is the heart: warm gold, intensifying at the core
-  col += vec3(1.0, 0.72, 0.1) * coherence * 2.2;
-  col += vec3(0.5, 0.18, 0.0) * coherence * coherence * 3.5;
+  // ═══ CREATURE RENDERING — density drives warmth ═══
 
-  // Emergence — violet for unexpected growth (physics inventing new shapes)
-  col += vec3(0.5, 0.2, 0.78) * emergence * 0.85;
-
-  // Iridescent shimmer at creature edges, driven by activity
-  float edge = smoothstep(0.01, 0.1, state) * smoothstep(0.55, 0.1, state);
-  float iridPhase = delta * 18.0 + state * 12.0 + growth * 6.28 + u_time * 0.3;
-  vec3 irid = vec3(
-    sin(iridPhase) * 0.5 + 0.5,
-    sin(iridPhase + 2.094) * 0.5 + 0.5,
-    sin(iridPhase + 4.189) * 0.5 + 0.5
+  // Base creature color: violet at sparse edges → gold at dense cores
+  float density = smoothstep(0.04, 0.65, state);
+  vec3 creatureColor = mix(
+    vec3(0.38, 0.12, 0.68),   // sparse: rich violet
+    vec3(1.0, 0.74, 0.06),    // dense: pure gold
+    density * density          // quadratic for dramatic transition
   );
-  col += irid * edge * activity * 0.35;
+  col += creatureColor * state * 2.8;
 
-  // Trail: warm afterglow
-  float trailGlow = max(0.0, trail - state);
-  col += vec3(0.18, 0.09, 0.025) * trailGlow * 0.5;
+  // White-gold hot core at peak density
+  float hotCore = smoothstep(0.6, 0.92, state);
+  col += vec3(1.0, 0.9, 0.55) * hotCore * 2.5;
+  col += vec3(1.0, 0.95, 0.85) * smoothstep(0.85, 0.98, state) * 1.2; // white-hot center
+
+  // ═══ IRIDESCENT EDGE SHIMMER ═══
+  // The signature ghost effect: rainbow shimmer at creature boundaries
+  // driven by the growth field so every ghost shimmers uniquely
+  float edge = smoothstep(0.03, 0.14, state) * smoothstep(0.5, 0.14, state);
+  float activity = abs(growth - 0.5) * 2.0;
+  float phase = potential * 28.0 + growth * 12.56 + state * 5.0 + u_time * 0.5;
+  vec3 irid = spectrum(phase * 0.15);
+  col += irid * edge * (0.35 + activity * 0.55);
+
+  // ═══ GROWTH HALO ═══
+  // Warm halo where growing, cool rim where dissolving
+  float growthDir = growth - 0.5;
+  col += vec3(0.7, 0.45, 0.05) * max(0.0, growthDir) * state * 1.0;
+  col += vec3(0.08, 0.25, 0.6) * max(0.0, -growthDir) * state * 0.6;
+
+  // ═══ TRAIL WARMTH ═══
+  float trailOnly = max(0.0, trail - state);
+  col += vec3(0.22, 0.1, 0.02) * trailOnly * 0.65;
+
+  return col;
+}
+
+// ── Spectral palette: full rainbow driven by potential field ──
+// Each creature is a different color based on its neighborhood — like soap bubbles
+vec3 spectralPalette(float state, float trail, float growth, float potential) {
+  vec3 col = vec3(0.003, 0.002, 0.012);
+
+  // Hue from potential field — each creature neighborhood has unique color
+  float hue = fract(potential * 3.5 + growth * 0.4 + u_time * 0.02);
+  vec3 rainbow = spectrum(hue);
+
+  // Intensity from state density
+  float intensity = state * 2.5;
+  col += rainbow * intensity;
+
+  // White-hot core
+  col += vec3(1.0, 0.95, 0.9) * smoothstep(0.7, 0.95, state) * 1.0;
+
+  // Edge shimmer — secondary rainbow shifted by growth
+  float edge = smoothstep(0.03, 0.12, state) * smoothstep(0.45, 0.12, state);
+  vec3 edgeColor = spectrum(hue + 0.33 + growth * 0.5);
+  col += edgeColor * edge * 0.5;
+
+  // Trail in creature's own color
+  float trailOnly = max(0.0, trail - state);
+  col += rainbow * trailOnly * 0.35;
 
   return col;
 }
@@ -219,11 +260,17 @@ void main() {
   vec4 d = texture(u_state, v_uv);
   float state = d.r, trail = d.g, potential = d.b, growth = d.a;
 
-  // ── Lantern palette: special ghost rendering path ──
+  // ── Ghost palettes: multi-field rendering paths ──
   if (u_palette == 5) {
     float mem = texture(u_memory, v_uv).r;
     float val = mix(state, max(state, trail), u_trailMix);
-    vec3 col = lanternPalette(val, trail, growth, mem);
+    vec3 col = lanternPalette(val, trail, growth, potential, mem);
+    outColor = vec4(col, 1.0);
+    return;
+  }
+  if (u_palette == 6) {
+    float val = mix(state, max(state, trail), u_trailMix);
+    vec3 col = spectralPalette(val, trail, growth, potential);
     outColor = vec4(col, 1.0);
     return;
   }
@@ -556,9 +603,11 @@ const PRESETS = {
 
   // ── Ghost species: beings defined by the tension between memory and physics ──
   ghost:         { name: "Ghost",         desc: "Ignis seeds in wrong physics — they remember shapes they can never hold", R: 15, T: 12, mu: 0.11, sigma: 0.015, peaks: [1], count: 12, spf: 4, species: "ignis", ghost: true, landscape: 'uniform', palette: 5 },
-  ghost_radial:  { name: "Lanterns",      desc: "Ghosts in a radial σ-well — they drift toward the center where coherence is possible", R: 15, T: 12, mu: 0.11, sigma: 0.015, peaks: [1], count: 10, spf: 4, species: "ignis", ghost: true, landscape: 'radial', palette: 5 },
+  ghost_radial:  { name: "Lanterns",      desc: "Ghosts in a radial σ-well — drifting toward the center where coherence glows gold", R: 15, T: 12, mu: 0.11, sigma: 0.015, peaks: [1], count: 10, spf: 4, species: "ignis", ghost: true, landscape: 'radial', palette: 5 },
   ghost_waves:   { name: "Rivers",        desc: "σ-waves create currents — ghosts migrate along rivers of kinder physics", R: 15, T: 12, mu: 0.11, sigma: 0.015, peaks: [1], count: 10, spf: 4, species: "ignis", ghost: true, landscape: 'waves', palette: 5 },
   ghost_islands: { name: "Archipelago",   desc: "Islands of tight σ in a dissolving sea — ghosts seek safe harbors", R: 15, T: 12, mu: 0.11, sigma: 0.015, peaks: [1], count: 14, spf: 4, species: "ignis", ghost: true, landscape: 'islands', palette: 5 },
+  ghost_prism:   { name: "Prism",         desc: "Full spectral rainbow — each ghost's color comes from its own neighborhood density", R: 15, T: 12, mu: 0.11, sigma: 0.015, peaks: [1], count: 12, spf: 4, species: "ignis", ghost: true, landscape: 'waves', palette: 6 },
+  ghost_orbium:  { name: "Orbium Ghost",  desc: "Orbium seeds in loosened physics — larger, slower, more mournful ghosts", R: 13, T: 10, mu: 0.15, sigma: 0.022, peaks: [1], count: 6, spf: 2, species: "orbium", ghost: true, landscape: 'radial', palette: 5 },
 };
 
 const PALETTES = [
@@ -568,6 +617,7 @@ const PALETTES = [
   { name: "Plasma", color: "#a78bfa" },
   { name: "Ocean", color: "#22d3ee" },
   { name: "Lantern", color: "#ffbe0b" },
+  { name: "Spectral", color: "#ff6b9d" },
 ];
 
 const VIEW_MODES = ["state", "potential", "growth", "composite"];
