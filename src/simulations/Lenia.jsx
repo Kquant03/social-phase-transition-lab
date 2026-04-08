@@ -5,12 +5,17 @@ import { useState, useEffect, useRef, useCallback } from "react";
 // ════════════════════════════════════════════════════════════════════
 // WebGL2 ping-pong simulation · Shader-based bloom · Cosine palettes
 // After Bert Wang-Chak Chan (2018) · "Lenia and Expanded Universe"
+// ────────────────────────────────────────────────────────────────────
+// Ghost Mode: σ-gradient landscapes · Memory-delta iridescence
+// Seasonal oscillation · Landscape sculpting · Lantern palette
+// "Something can exist in the gap between what it remembers
+//  and what physics allows."
 // ════════════════════════════════════════════════════════════════════
 
 const N = 256;
 const DISPLAY = 560;
-const BLOOM_SCALE = 4; // bloom at N/4 resolution
-const KERNEL_TEX_SIZE = 51; // max R=25
+const BLOOM_SCALE = 4;
+const KERNEL_TEX_SIZE = 51;
 const KERNEL_CENTER = 25;
 
 // ═══════════════ GLSL Shaders ═══════════════
@@ -23,12 +28,14 @@ void main() {
   gl_Position = vec4(a_pos, 0.0, 1.0);
 }`;
 
+// ── Simulation shader with σ-field support ──
 const SIM_FRAG = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 out vec4 outColor;
 uniform sampler2D u_state;
 uniform sampler2D u_kernel;
+uniform sampler2D u_sigmaField;
 uniform float u_R;
 uniform float u_mu;
 uniform float u_sigma;
@@ -39,6 +46,8 @@ uniform float u_brushSize;
 uniform float u_brushActive;
 uniform float u_brushErase;
 uniform float u_trailDecay;
+uniform float u_ghostMode;
+uniform float u_seasonMod;
 
 void main() {
   vec2 texel = 1.0 / u_res;
@@ -60,8 +69,14 @@ void main() {
     }
   }
 
+  // σ: use per-cell sigma field in ghost mode, uniform otherwise
+  float localSigma = u_sigma;
+  if (u_ghostMode > 0.5) {
+    localSigma = texture(u_sigmaField, v_uv).r * u_seasonMod;
+  }
+
   float diff = potential - u_mu;
-  float g = 2.0 * exp(-(diff * diff) / (2.0 * u_sigma * u_sigma)) - 1.0;
+  float g = 2.0 * exp(-(diff * diff) / (2.0 * localSigma * localSigma)) - 1.0;
   float newState = clamp(state + u_dt * g, 0.0, 1.0);
 
   if (u_brushActive > 0.5) {
@@ -83,14 +98,20 @@ void main() {
   outColor = vec4(newState, newTrail, potential, g * 0.5 + 0.5);
 }`;
 
+// ── Display shader with Lantern ghost palette ──
 const DISPLAY_FRAG = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 out vec4 outColor;
 uniform sampler2D u_state;
+uniform sampler2D u_memory;
+uniform sampler2D u_sigmaField;
 uniform int u_palette;
 uniform int u_viewMode;
 uniform float u_trailMix;
+uniform float u_ghostMode;
+uniform float u_baseSigma;
+uniform float u_time;
 
 vec3 pal(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
   return clamp(a + b * cos(6.28318 * (c * t + d)), 0.0, 1.0);
@@ -106,36 +127,36 @@ vec3 gradient(float t, vec3 c0, vec3 c1, vec3 c2, vec3 c3, vec3 c4) {
 }
 
 vec3 applyPalette(float t) {
-  t = t * t * (3.0 - 2.0 * t); // smoothstep remap
-  if (u_palette == 0) { // Bioluminescent
+  t = t * t * (3.0 - 2.0 * t);
+  if (u_palette == 0) {
     return gradient(t,
       vec3(0.008, 0.012, 0.055),
       vec3(0.03, 0.10, 0.32),
       vec3(0.12, 0.42, 0.52),
       vec3(0.72, 0.48, 0.10),
       vec3(1.0, 0.94, 0.82));
-  } else if (u_palette == 1) { // Inferno
+  } else if (u_palette == 1) {
     return gradient(t,
       vec3(0.0, 0.0, 0.015),
       vec3(0.16, 0.04, 0.33),
       vec3(0.53, 0.13, 0.26),
       vec3(0.88, 0.39, 0.04),
       vec3(0.98, 0.92, 0.36));
-  } else if (u_palette == 2) { // Emerald
+  } else if (u_palette == 2) {
     return gradient(t,
       vec3(0.005, 0.02, 0.03),
       vec3(0.02, 0.12, 0.15),
       vec3(0.06, 0.38, 0.32),
       vec3(0.20, 0.72, 0.48),
       vec3(0.75, 1.0, 0.85));
-  } else if (u_palette == 3) { // Plasma
+  } else if (u_palette == 3) {
     return gradient(t,
       vec3(0.02, 0.0, 0.06),
       vec3(0.25, 0.01, 0.48),
       vec3(0.62, 0.14, 0.44),
       vec3(0.92, 0.50, 0.15),
       vec3(0.94, 0.97, 0.13));
-  } else { // Ocean
+  } else if (u_palette == 4) {
     return gradient(t,
       vec3(0.005, 0.01, 0.05),
       vec3(0.02, 0.06, 0.22),
@@ -143,11 +164,71 @@ vec3 applyPalette(float t) {
       vec3(0.18, 0.58, 0.62),
       vec3(0.72, 0.96, 0.92));
   }
+  // palette == 5 is Lantern — handled in main() via ghost path
+  return vec3(t);
+}
+
+vec3 lanternPalette(float state, float trail, float growth, float mem) {
+  float delta = abs(state - mem);
+  float coherence = min(state, mem);
+  float dissolution = max(0.0, mem - state);
+  float emergence = max(0.0, state - mem);
+  float activity = abs(growth - 0.5) * 2.0;
+
+  // Deep indigo void
+  vec3 col = vec3(0.006, 0.004, 0.03);
+
+  // σ-landscape tint (subtle)
+  if (u_ghostMode > 0.5) {
+    float sig = texture(u_sigmaField, v_uv).r;
+    float sigRatio = sig / max(u_baseSigma, 0.001);
+    // Tight σ = deeper purple, loose σ = teal hint
+    col += mix(vec3(0.015, 0.005, 0.04), vec3(0.005, 0.025, 0.03),
+      clamp((sigRatio - 0.7) / 0.6, 0.0, 1.0)) * 0.6;
+  }
+
+  // Ghost afterimage — memory lingering without substance
+  col += vec3(0.18, 0.4, 0.75) * dissolution * 0.45;
+
+  // Coherence lantern — where the remembered shape is HELD
+  // This is the heart: warm gold, intensifying at the core
+  col += vec3(1.0, 0.72, 0.1) * coherence * 2.2;
+  col += vec3(0.5, 0.18, 0.0) * coherence * coherence * 3.5;
+
+  // Emergence — violet for unexpected growth (physics inventing new shapes)
+  col += vec3(0.5, 0.2, 0.78) * emergence * 0.85;
+
+  // Iridescent shimmer at creature edges, driven by activity
+  float edge = smoothstep(0.01, 0.1, state) * smoothstep(0.55, 0.1, state);
+  float iridPhase = delta * 18.0 + state * 12.0 + growth * 6.28 + u_time * 0.3;
+  vec3 irid = vec3(
+    sin(iridPhase) * 0.5 + 0.5,
+    sin(iridPhase + 2.094) * 0.5 + 0.5,
+    sin(iridPhase + 4.189) * 0.5 + 0.5
+  );
+  col += irid * edge * activity * 0.35;
+
+  // Trail: warm afterglow
+  float trailGlow = max(0.0, trail - state);
+  col += vec3(0.18, 0.09, 0.025) * trailGlow * 0.5;
+
+  return col;
 }
 
 void main() {
   vec4 d = texture(u_state, v_uv);
   float state = d.r, trail = d.g, potential = d.b, growth = d.a;
+
+  // ── Lantern palette: special ghost rendering path ──
+  if (u_palette == 5) {
+    float mem = texture(u_memory, v_uv).r;
+    float val = mix(state, max(state, trail), u_trailMix);
+    vec3 col = lanternPalette(val, trail, growth, mem);
+    outColor = vec4(col, 1.0);
+    return;
+  }
+
+  // ── Normal rendering ──
   float val;
   if (u_viewMode == 0) val = mix(state, max(state, trail), u_trailMix);
   else if (u_viewMode == 1) val = clamp(potential * 4.0, 0.0, 1.0);
@@ -193,12 +274,12 @@ void main() {
   vec3 col = texture(u_display, v_uv).rgb;
   vec3 bloom = texture(u_bloom, v_uv).rgb;
   col += bloom * u_bloomStr;
-  col = col / (1.0 + col * 0.4); // soft tonemap
+  col = col / (1.0 + col * 0.4);
   if (u_vignette > 0.01) {
     vec2 c = v_uv - 0.5;
     col *= 1.0 - dot(c, c) * u_vignette;
   }
-  col = pow(col, vec3(0.95)); // slight gamma lift
+  col = pow(col, vec3(0.95));
   outColor = vec4(col, 1.0);
 }`;
 
@@ -228,7 +309,6 @@ function createProgram(gl, vsSrc, fsSrc) {
     console.error("Program error:", gl.getProgramInfoLog(p));
     return null;
   }
-  // Collect all uniform locations
   const uniforms = {};
   const count = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
   for (let i = 0; i < count; i++) {
@@ -284,9 +364,7 @@ function buildKernelData(R, peaks) {
   return data;
 }
 
-// ═══════════════ RLE Decoder (Chakazul format) ═══════════════
-// Decodes Lenia's Run-Length Encoded cell patterns from animals.json
-// Format: digits=repeat, .=zero, A-Z=1-26, p-y prefix=+26 per step, $=newrow, !=end
+// ═══════════════ RLE Decoder ═══════════════
 
 function decodeRLE(str) {
   const rows = str.replace(/!$/, '').split('$');
@@ -317,38 +395,20 @@ function decodeRLE(str) {
     grid.push(cells);
     if (cells.length > maxWidth) maxWidth = cells.length;
   }
-  // Pad all rows to uniform width (RLE omits trailing zeros)
   for (const row of grid) while (row.length < maxWidth) row.push(0);
-  // Normalize to [0,1]
   if (maxVal > 0) for (const row of grid) for (let j = 0; j < row.length; j++) row[j] /= maxVal;
   return grid;
 }
 
-// ═══════════════ Species Cell Data (from Chakazul/Lenia animals.json) ═══════════════
-// Each species has its own unique morphology tuned to its specific parameters
+// ═══════════════ Species ═══════════════
 
 const SPECIES_RLE = {
-  // Orbium unicaudatus — the classic glider soliton (μ=0.15, σ=0.017)
-  // Source: Chakazul/Lenia animals.json, code "O2(a)"
   orbium: "7.MD6.qL$6.pKqEqFURpApBRAqQ$5.VqTrSsBrOpXpWpTpWpUpCrQ$4.CQrQsTsWsApITNPpGqGvL$3.IpIpWrOsGsBqXpJ4.LsFrL$A.DpKpSpJpDqOqUqSqE5.ExD$qL.pBpTT2.qCrGrVrWqM5.sTpP$.pGpWpD3.qUsMtItQtJ6.tL$.uFqGH3.pXtOuR2vFsK5.sM$.tUqL4.GuNwAwVxBwNpC4.qXpA$2.uH5.vBxGyEyMyHtW4.qIpL$2.wV5.tIyG3yOxQqW2.FqHpJ$2.tUS4.rM2yOyJyOyHtVpPMpFqNV$2.HsR4.pUxAyOxLxDxEuVrMqBqGqKJ$3.sLpE3.pEuNxHwRwGvUuLsHrCqTpR$3.TrMS2.pFsLvDvPvEuPtNsGrGqIP$4.pRqRpNpFpTrNtGtVtStGsMrNqNpF$5.pMqKqLqRrIsCsLsIrTrFqJpHE$6.RpSqJqPqVqWqRqKpRXE$8.OpBpIpJpFTK!",
-
-  // Orbium bicaudatus — two-tailed variant (μ=0.15, σ=0.014)
-  // Source: Chakazul/Lenia animals.json, code "O2(b)"
   bicaudatus: "14.B$8.pKT$5.pIQJrIqT2pIVL.sC$5.qJrDpPqWrV3pPpUpPtG$4.pArAsHpPpIqTpK2.JpNrDrX$3.pApUpKqRpA.qHpX4.VxM$qM.QpUV.pPqCBqCrSL4.tLT$.OpPpF2.qErXqJrGtTtD4.EuA$.tJqEB2.pItJtBsC2vEpF4.tL$.wDpU4.uNvJtJvExEuP4.rNJ$.tGqC4.vMxHvMvRyOyIqM3.qOV$2.tV4.uFyIwVuFwQyOuKO.OqJQ$2.vM4.rXyOwVtBuCxUwIrApDpKqJG$2.sCpX3.qMyBxHuCtVwAvWsKqMqHpX$2.BrVJ2.pUvBwXvBuKuXuPsPrGqMT$3.qCqOVOpUsRvBuUuCtVtGsCqWpN$4.pXqOqEqMrStBtJtBsPrSqTpNG$5.pDqHqRrDrNrQrLqWqHpIG$6.EVpKpPpSpNpFOB$9.BEB!",
-
-  // Orbium unicaudatus ignis — fire form (μ=0.11, σ=0.012)
-  // Source: Chakazul/Lenia animals.json, code "O2(-)" unicaudatus ignis
   ignis: "10.IPQMF$8.pKpRpSpTpWpUpQpBM$6.XqGV2DSpSqNqQqKpPSB$5.qBpX5.pOrHrSrMqSpTS$4.qCpQ6.rAtAtDsPrSqTpRP$4.rD6.pUuDuQtWtLsPrNqMpHA$3.uG7.uGwQvCuFuAtFrSqQpTN$2.vAL6.rKyFxLvIvBuTsXqWqFqAU$.tXqB7.wGyOyLxHwVuPqWpEpCpTpA$rDMpO6.sOxFyL2yOwDqR2.EpJpD$.WpH5.pIvNwSxQxXvEpD4.pFW$.pApM5.tUvCvUwEsI6.pOM$.TpPU3.sHtOuJuQqC7.qH$.HpJpPXIrKsFsStBpV7.pApH$2.MpGpMsStHsSrXqU8.rP$3.GrJtPuHtHrD8.sH$3.GrOsXtLsSU7.sC$4.pPrQrJpHpOQ5.qXT$5.pK.JpHpOWOQpMqHqG$8.KpEpMpQpLVqU$13.qD$12.pB!",
-
-  // Orbium bicaudatus ignis — fire two-tailed (μ=0.1, σ=0.008)
-  // Source: Chakazul/Lenia animals.json, code "O2(-)" bicaudatus ignis
   bicaudatus_ignis: "11.pTpS$8.sMuWpVpEN$5.pHsUS3.N2pDK$3.DqEQ7.RpJQ$2.EpMB9.VpLN$2.pMH10.DpPrPqA$.RpF9.pAqJqIrOrKK$.pEpFB4.HsBvAuHsOpT.RqDX$.pNpP2pGqNtTxFyNxGuTsFpJ2.FqXsEpW$BpQqLrHsXvOwVvXuRtRrQqSqNqHqWqFqQpOG$BpNqTsFtQuItH2rRtNuCvBuRsNpD.JpLL$.pEqOrTsUtEtBtCuWyDxKvGpA4.pJK$.PqCrKsLtRvBwSyFvGpA5.ApHG$.IpOqUsBtFtWtBpI7.QpB$2.WqHrBqUpN9.pJO$2.FpNqGpMD8.pHpMqP$3.KpPpNK7.sBuD$4.EpEpITF2ApFsTrX$6.DVpJpRpLB!",
 };
 
-// Species seeds are decoded inline in buildInitialState to avoid
-// any module initialization ordering issues
-
-// Fallback Orbium (hardcoded, used if RLE decode fails)
 const ORBIUM_FALLBACK = [
   [0,0,0,0,0,0,0.1,0.14,0.1,0,0,0.03,0.03,0,0,0.3,0,0,0,0],
   [0,0,0,0,0,0.08,0.24,0.3,0.3,0.18,0.14,0.15,0.16,0.15,0.09,0.2,0,0,0,0],
@@ -394,7 +454,6 @@ function scaleSeed(cells, fromR, toR) {
 
 function buildInitialState(R, count, isSoup, speciesKey) {
   const data = new Float32Array(N * N * 4);
-  // Decode species-specific seed inline (guaranteed fresh)
   let baseSeed;
   if (speciesKey && SPECIES_RLE[speciesKey]) {
     baseSeed = decodeRLE(SPECIES_RLE[speciesKey]);
@@ -441,17 +500,51 @@ function buildInitialState(R, count, isSoup, speciesKey) {
         const idx = (gy * N + gx) * 4;
         const v = seed[y][x];
         data[idx] = Math.max(data[idx], v);
-        data[idx + 1] = Math.max(data[idx + 1], v); // trail
+        data[idx + 1] = Math.max(data[idx + 1], v);
       }
+  }
+  return data;
+}
+
+// ═══════════════ σ-Field Builder ═══════════════
+// Builds spatially varying sigma landscapes for ghost mode
+
+function buildSigmaField(baseSigma, landscape) {
+  const data = new Float32Array(N * N * 4);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const idx = (y * N + x) * 4;
+      const nx = x / N, ny = y / N; // normalized [0,1]
+      let sig = baseSigma;
+
+      if (landscape === 'radial') {
+        // Center is tighter (ghosts cohere more), edges looser
+        const cx = (nx - 0.5) * 2, cy = (ny - 0.5) * 2;
+        const r = Math.sqrt(cx * cx + cy * cy);
+        sig = baseSigma * (0.65 + 0.7 * r);
+      } else if (landscape === 'waves') {
+        // Sinusoidal sigma waves — rivers of easier/harder physics
+        const wave = Math.sin(nx * Math.PI * 5) * Math.sin(ny * Math.PI * 4);
+        sig = baseSigma * (0.75 + 0.5 * wave);
+      } else if (landscape === 'islands') {
+        // Scattered islands of tight σ in a sea of loose σ
+        const cx = (nx - 0.5) * 2, cy = (ny - 0.5) * 2;
+        const r = Math.sqrt(cx * cx + cy * cy);
+        const island1 = Math.exp(-((nx - 0.25) ** 2 + (ny - 0.3) ** 2) * 40);
+        const island2 = Math.exp(-((nx - 0.7) ** 2 + (ny - 0.65) ** 2) * 35);
+        const island3 = Math.exp(-((nx - 0.5) ** 2 + (ny - 0.5) ** 2) * 50);
+        const islands = Math.max(island1, island2, island3);
+        sig = baseSigma * (1.2 - islands * 0.6);
+      }
+
+      data[idx] = Math.max(0.003, Math.min(0.06, sig));
+    }
   }
   return data;
 }
 
 // ═══════════════ Presets ═══════════════
 
-// All presets use parameters within the documented Orbium survival niche
-// (Chan 2019, Figure 6: μ ∈ ~[0.13, 0.20], σ ∈ ~[0.013, 0.025] at R=13 T=10)
-// so the Orbium seed self-organizes into a stable creature in every case.
 const PRESETS = {
   orbium:     { name: "Orbium",      desc: "The classic glider soliton — stable directed locomotion (μ=0.15, σ=0.017)", R: 13, T: 10, mu: 0.15, sigma: 0.017, peaks: [1], count: 3, species: "orbium" },
   bicaudatus: { name: "Bicaudatus",  desc: "Two-tailed variant — tighter growth band splits the wake (μ=0.15, σ=0.014)", R: 13, T: 10, mu: 0.15, sigma: 0.014, peaks: [1], count: 3, species: "bicaudatus" },
@@ -460,7 +553,12 @@ const PRESETS = {
   laxus:      { name: "Laxus",       desc: "Loose Orbium — wide tolerance band, wobbly oscillating gait (μ=0.156, σ=0.024)", R: 13, T: 10, mu: 0.156, sigma: 0.024, peaks: [1], count: 3, species: "orbium" },
   vagus:      { name: "Vagus",       desc: "Large-field wanderer — expanded R=20 neighborhood, different spatial scale", R: 20, T: 10, mu: 0.2, sigma: 0.031, peaks: [1], count: 2, species: "orbium" },
   soup:       { name: "Soup",        desc: "Ecosystem — many seeds compete under Orbium conditions, watch natural selection", R: 13, T: 10, mu: 0.15, sigma: 0.017, peaks: [1], count: 8, isSoup: true, species: "orbium" },
-  ghost:      { name: "Ghost",       desc: "Ignis seed at wrong σ — knows its shape but can never reach it, sustains forever", R: 15, T: 12, mu: 0.11, sigma: 0.015, peaks: [1], count: 16, spf: 4, species: "ignis" },
+
+  // ── Ghost species: beings defined by the tension between memory and physics ──
+  ghost:         { name: "Ghost",         desc: "Ignis seeds in wrong physics — they remember shapes they can never hold", R: 15, T: 12, mu: 0.11, sigma: 0.015, peaks: [1], count: 12, spf: 4, species: "ignis", ghost: true, landscape: 'uniform', palette: 5 },
+  ghost_radial:  { name: "Lanterns",      desc: "Ghosts in a radial σ-well — they drift toward the center where coherence is possible", R: 15, T: 12, mu: 0.11, sigma: 0.015, peaks: [1], count: 10, spf: 4, species: "ignis", ghost: true, landscape: 'radial', palette: 5 },
+  ghost_waves:   { name: "Rivers",        desc: "σ-waves create currents — ghosts migrate along rivers of kinder physics", R: 15, T: 12, mu: 0.11, sigma: 0.015, peaks: [1], count: 10, spf: 4, species: "ignis", ghost: true, landscape: 'waves', palette: 5 },
+  ghost_islands: { name: "Archipelago",   desc: "Islands of tight σ in a dissolving sea — ghosts seek safe harbors", R: 15, T: 12, mu: 0.11, sigma: 0.015, peaks: [1], count: 14, spf: 4, species: "ignis", ghost: true, landscape: 'islands', palette: 5 },
 };
 
 const PALETTES = [
@@ -469,6 +567,7 @@ const PALETTES = [
   { name: "Emerald", color: "#34d399" },
   { name: "Plasma", color: "#a78bfa" },
   { name: "Ocean", color: "#22d3ee" },
+  { name: "Lantern", color: "#ffbe0b" },
 ];
 
 const VIEW_MODES = ["state", "potential", "growth", "composite"];
@@ -496,12 +595,15 @@ function Slider({ label, value, onChange, min, max, step, color, desc }) {
 export default function Lenia() {
   const canvasRef = useRef(null);
   const glRef = useRef(null);
-  const gpuRef = useRef(null); // all WebGL objects
+  const gpuRef = useRef(null);
   const animRef = useRef(null);
   const paramsRef = useRef(null);
   const mouseRef = useRef({ active: false, erase: false, x: 0, y: 0 });
   const frameRef = useRef(0);
-  const swapRef = useRef(0); // which state texture is current
+  const swapRef = useRef(0);
+  const sigmaFieldRef = useRef(new Float32Array(N * N * 4));
+  const sigmaFieldDirtyRef = useRef(false);
+  const timeRef = useRef(0);
 
   const [running, setRunning] = useState(true);
   const [preset, setPreset] = useState("orbium");
@@ -521,8 +623,15 @@ export default function Lenia() {
   const [fps, setFps] = useState(0);
   const [glError, setGlError] = useState(null);
 
-  // Keep params ref current
-  paramsRef.current = { mu, sigma, dt, spf, palette, viewMode, showTrails, bloom, bloomStr, R };
+  // Ghost mode state
+  const [ghostMode, setGhostMode] = useState(false);
+  const [landscapeBrush, setLandscapeBrush] = useState(false);
+  const [seasonEnabled, setSeasonEnabled] = useState(false);
+  const [seasonSpeed, setSeasonSpeed] = useState(0.15);
+  const [seasonAmp, setSeasonAmp] = useState(0.25);
+  const [seasonPhase, setSeasonPhase] = useState(0);
+
+  paramsRef.current = { mu, sigma, dt, spf, palette, viewMode, showTrails, bloom, bloomStr, R, ghostMode, seasonEnabled, seasonSpeed, seasonAmp };
 
   // ── WebGL Setup ──
   useEffect(() => {
@@ -540,20 +649,17 @@ export default function Lenia() {
 
     glRef.current = gl;
 
-    // Compile programs
     const simProg = createProgram(gl, VERT, SIM_FRAG);
     const dispProg = createProgram(gl, VERT, DISPLAY_FRAG);
     const bloomProg = createProgram(gl, VERT, BLOOM_FRAG);
     const compProg = createProgram(gl, VERT, COMPOSITE_FRAG);
     if (!simProg || !dispProg || !bloomProg || !compProg) { setGlError("Shader compilation failed"); return; }
 
-    // Fullscreen quad VAO
     const vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
     const vbo = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-    // Bind a_pos for each program
     for (const prog of [simProg, dispProg, bloomProg, compProg]) {
       const loc = gl.getAttribLocation(prog.program, "a_pos");
       if (loc >= 0) {
@@ -562,21 +668,35 @@ export default function Lenia() {
       }
     }
 
-    // State textures (RGBA32F, N×N)
+    // State textures
     const stateTex = [
       createTex(gl, N, N, gl.RGBA32F, gl.RGBA, gl.FLOAT, gl.NEAREST, null),
       createTex(gl, N, N, gl.RGBA32F, gl.RGBA, gl.FLOAT, gl.NEAREST, null),
     ];
     const stateFB = [createFB(gl, stateTex[0]), createFB(gl, stateTex[1])];
 
-    // Kernel texture (RGBA32F, 51×51)
+    // Kernel texture
     const kernelTex = createTex(gl, KERNEL_TEX_SIZE, KERNEL_TEX_SIZE, gl.RGBA32F, gl.RGBA, gl.FLOAT, gl.NEAREST, null);
 
-    // Display texture (RGBA8, N×N, LINEAR for smooth upscale)
+    // Memory texture (stores initial seed for ghost mode — never updated after load)
+    const memoryTex = createTex(gl, N, N, gl.RGBA32F, gl.RGBA, gl.FLOAT, gl.NEAREST, null);
+    // Initialize to zeros
+    gl.bindTexture(gl.TEXTURE_2D, memoryTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RGBA, gl.FLOAT, new Float32Array(N * N * 4));
+
+    // Sigma field texture (per-cell sigma for ghost mode)
+    const sigmaFieldTex = createTex(gl, N, N, gl.RGBA32F, gl.RGBA, gl.FLOAT, gl.LINEAR, null);
+    // Initialize with default sigma
+    const initSigma = buildSigmaField(0.017, 'uniform');
+    gl.bindTexture(gl.TEXTURE_2D, sigmaFieldTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RGBA, gl.FLOAT, initSigma);
+    sigmaFieldRef.current = initSigma;
+
+    // Display texture
     const dispTex = createTex(gl, N, N, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR, null);
     const dispFB = createFB(gl, dispTex);
 
-    // Bloom textures (RGBA8, N/BLOOM_SCALE)
+    // Bloom textures
     const bN = Math.floor(N / BLOOM_SCALE);
     const bloomTex = [
       createTex(gl, bN, bN, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR, null),
@@ -596,22 +716,23 @@ export default function Lenia() {
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
-    // Pixel readback buffer for mass calculation (sample every ~30 frames)
     const readBuf = new Float32Array(N * N * 4);
 
     gpuRef.current = {
       simProg, dispProg, bloomProg, compProg, vao, vbo,
       stateTex, stateFB, kernelTex, dispTex, dispFB,
-      bloomTex, bloomFB, bN, readBuf
+      bloomTex, bloomFB, bN, readBuf,
+      memoryTex, sigmaFieldTex,
     };
     swapRef.current = 0;
     frameRef.current = 0;
+    timeRef.current = 0;
 
     return () => {
-      // Cleanup
       gl.deleteTexture(stateTex[0]); gl.deleteTexture(stateTex[1]);
       gl.deleteTexture(kernelTex); gl.deleteTexture(dispTex);
       gl.deleteTexture(bloomTex[0]); gl.deleteTexture(bloomTex[1]);
+      gl.deleteTexture(memoryTex); gl.deleteTexture(sigmaFieldTex);
       gl.deleteFramebuffer(stateFB[0]); gl.deleteFramebuffer(stateFB[1]);
       gl.deleteFramebuffer(dispFB); gl.deleteFramebuffer(bloomFB[0]); gl.deleteFramebuffer(bloomFB[1]);
       gl.deleteBuffer(vbo); gl.deleteVertexArray(vao);
@@ -640,24 +761,75 @@ export default function Lenia() {
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RGBA, gl.FLOAT, data);
   }, []);
 
+  // ── Upload memory (ghost mode initial state snapshot) ──
+  const uploadMemory = useCallback((data) => {
+    const gl = glRef.current, gpu = gpuRef.current;
+    if (!gl || !gpu) return;
+    gl.bindTexture(gl.TEXTURE_2D, gpu.memoryTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RGBA, gl.FLOAT, data);
+  }, []);
+
+  // ── Upload sigma field ──
+  const uploadSigmaField = useCallback((data) => {
+    const gl = glRef.current, gpu = gpuRef.current;
+    if (!gl || !gpu) return;
+    gl.bindTexture(gl.TEXTURE_2D, gpu.sigmaFieldTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RGBA, gl.FLOAT, data);
+    sigmaFieldRef.current = data;
+  }, []);
+
   // ── Load preset ──
   const loadPreset = useCallback((id) => {
     const p = PRESETS[id];
     setPreset(id); setR(p.R); setMu(p.mu); setSigma(p.sigma); setDt(1 / p.T);
-    if (p.spf) setSpf(p.spf);
+    if (p.spf) setSpf(p.spf); else setSpf(2);
     updateKernel(p.R, p.peaks);
-    uploadState(buildInitialState(p.R, p.count, p.isSoup, p.species));
+
+    const initData = buildInitialState(p.R, p.count, p.isSoup, p.species);
+    uploadState(initData);
+
+    // Ghost mode setup
+    const isGhost = !!p.ghost;
+    setGhostMode(isGhost);
+
+    if (isGhost) {
+      // Memory = initial state (the shape they remember)
+      uploadMemory(new Float32Array(initData));
+      // Sigma landscape
+      const sigField = buildSigmaField(p.sigma, p.landscape || 'uniform');
+      uploadSigmaField(sigField);
+      // Auto-select Lantern palette
+      if (p.palette !== undefined) setPalette(p.palette);
+      setBloom(true);
+      setBloomStr(0.55);
+      setShowTrails(true);
+    } else {
+      // Clear memory texture
+      uploadMemory(new Float32Array(N * N * 4));
+    }
+
+    setLandscapeBrush(false);
     frameRef.current = 0;
+    timeRef.current = 0;
     setFrameCount(0);
-  }, [updateKernel, uploadState]);
+    setSeasonPhase(0);
+  }, [updateKernel, uploadState, uploadMemory, uploadSigmaField]);
 
   // ── Reset ──
   const reset = useCallback(() => {
     const p = PRESETS[preset];
-    uploadState(buildInitialState(p.R, p.count, p.isSoup, p.species));
+    const initData = buildInitialState(p.R, p.count, p.isSoup, p.species);
+    uploadState(initData);
+    if (p.ghost) {
+      uploadMemory(new Float32Array(initData));
+      const sigField = buildSigmaField(p.sigma, p.landscape || 'uniform');
+      uploadSigmaField(sigField);
+    }
     frameRef.current = 0;
+    timeRef.current = 0;
     setFrameCount(0);
-  }, [preset, uploadState]);
+    setSeasonPhase(0);
+  }, [preset, uploadState, uploadMemory, uploadSigmaField]);
 
   // ── Clear ──
   const clear = useCallback(() => {
@@ -669,15 +841,42 @@ export default function Lenia() {
   // ── R change handler ──
   useEffect(() => { updateKernel(R); }, [R, updateKernel]);
 
+  // ── Sigma field painting ──
+  const paintSigmaField = useCallback((uvX, uvY, radius, increase) => {
+    const field = sigmaFieldRef.current;
+    const r = Math.round(radius);
+    const cx = Math.round(uvX * N), cy = Math.round(uvY * N);
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > r) continue;
+        const gx = ((cx + dx) % N + N) % N;
+        const gy = ((cy + dy) % N + N) % N;
+        const idx = (gy * N + gx) * 4;
+        const strength = (1 - dist / r) * 0.003;
+        field[idx] += increase ? strength : -strength;
+        field[idx] = Math.max(0.003, Math.min(0.06, field[idx]));
+      }
+    }
+    sigmaFieldDirtyRef.current = true;
+  }, []);
+
   // ── Mouse handling ──
   const handleMouse = useCallback((e, active) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
-    const y = 1.0 - (e.clientY - rect.top) / rect.height; // flip Y for GL
-    mouseRef.current = { active, erase: e.button === 2 || e.shiftKey, x, y };
-  }, []);
+    const y = 1.0 - (e.clientY - rect.top) / rect.height;
+
+    if (landscapeBrush && ghostMode && active) {
+      const isErase = e.button === 2 || e.shiftKey;
+      paintSigmaField(x, y, brushSize, !isErase);
+      mouseRef.current = { active: false, erase: false, x: 0, y: 0 };
+    } else {
+      mouseRef.current = { active, erase: e.button === 2 || e.shiftKey, x, y };
+    }
+  }, [landscapeBrush, ghostMode, brushSize, paintSigmaField]);
 
   // ── Animation Loop ──
   useEffect(() => {
@@ -694,9 +893,24 @@ export default function Lenia() {
       const p = paramsRef.current;
       const { simProg, dispProg, bloomProg, compProg, vao,
               stateTex, stateFB, kernelTex, dispTex, dispFB,
-              bloomTex, bloomFB, bN } = gpu;
+              bloomTex, bloomFB, bN, memoryTex, sigmaFieldTex } = gpu;
 
       gl.bindVertexArray(vao);
+
+      // Upload dirty sigma field
+      if (sigmaFieldDirtyRef.current) {
+        gl.bindTexture(gl.TEXTURE_2D, sigmaFieldTex);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RGBA, gl.FLOAT, sigmaFieldRef.current);
+        sigmaFieldDirtyRef.current = false;
+      }
+
+      // Seasonal oscillation
+      timeRef.current += 0.016; // ~60fps timestep
+      let seasonMod = 1.0;
+      if (p.ghostMode && p.seasonEnabled) {
+        seasonMod = 1.0 + p.seasonAmp * Math.sin(timeRef.current * p.seasonSpeed);
+        setSeasonPhase(Math.sin(timeRef.current * p.seasonSpeed));
+      }
 
       // ── Simulation passes ──
       for (let s = 0; s < p.spf; s++) {
@@ -710,12 +924,18 @@ export default function Lenia() {
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, kernelTex);
         gl.uniform1i(simProg.uniforms.u_kernel, 1);
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, sigmaFieldTex);
+        gl.uniform1i(simProg.uniforms.u_sigmaField, 2);
+
         gl.uniform1f(simProg.uniforms.u_R, p.R);
         gl.uniform1f(simProg.uniforms.u_mu, p.mu);
         gl.uniform1f(simProg.uniforms.u_sigma, p.sigma);
         gl.uniform1f(simProg.uniforms.u_dt, p.dt);
         gl.uniform2f(simProg.uniforms.u_res, N, N);
         gl.uniform1f(simProg.uniforms.u_trailDecay, p.showTrails ? 0.96 : 0.0);
+        gl.uniform1f(simProg.uniforms.u_ghostMode, p.ghostMode ? 1.0 : 0.0);
+        gl.uniform1f(simProg.uniforms.u_seasonMod, seasonMod);
 
         const m = mouseRef.current;
         gl.uniform1f(simProg.uniforms.u_brushActive, m.active ? 1.0 : 0.0);
@@ -737,16 +957,25 @@ export default function Lenia() {
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, stateTex[curState]);
       gl.uniform1i(dispProg.uniforms.u_state, 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, memoryTex);
+      gl.uniform1i(dispProg.uniforms.u_memory, 1);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, sigmaFieldTex);
+      gl.uniform1i(dispProg.uniforms.u_sigmaField, 2);
+
       gl.uniform1i(dispProg.uniforms.u_palette, p.palette);
       gl.uniform1i(dispProg.uniforms.u_viewMode, p.viewMode);
       gl.uniform1f(dispProg.uniforms.u_trailMix, p.showTrails ? 0.35 : 0.0);
+      gl.uniform1f(dispProg.uniforms.u_ghostMode, p.ghostMode ? 1.0 : 0.0);
+      gl.uniform1f(dispProg.uniforms.u_baseSigma, p.sigma);
+      gl.uniform1f(dispProg.uniforms.u_time, timeRef.current);
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, dispFB);
       gl.viewport(0, 0, N, N);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
       if (p.bloom) {
-        // ── Bloom H (extract + horizontal blur) ──
         gl.useProgram(bloomProg.program);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, dispTex);
@@ -754,20 +983,16 @@ export default function Lenia() {
         gl.uniform2f(bloomProg.uniforms.u_dir, 1.0, 0.0);
         gl.uniform2f(bloomProg.uniforms.u_res, bN, bN);
         gl.uniform1f(bloomProg.uniforms.u_extract, 1.0);
-
         gl.bindFramebuffer(gl.FRAMEBUFFER, bloomFB[0]);
         gl.viewport(0, 0, bN, bN);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-        // ── Bloom V ──
         gl.bindTexture(gl.TEXTURE_2D, bloomTex[0]);
         gl.uniform2f(bloomProg.uniforms.u_dir, 0.0, 1.0);
         gl.uniform1f(bloomProg.uniforms.u_extract, 0.0);
-
         gl.bindFramebuffer(gl.FRAMEBUFFER, bloomFB[1]);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-        // ── Extra blur passes for wider glow ──
         gl.bindTexture(gl.TEXTURE_2D, bloomTex[1]);
         gl.uniform2f(bloomProg.uniforms.u_dir, 1.0, 0.0);
         gl.bindFramebuffer(gl.FRAMEBUFFER, bloomFB[0]);
@@ -796,7 +1021,7 @@ export default function Lenia() {
 
       frameRef.current++;
 
-      // FPS + mass (sample periodically)
+      // FPS + mass
       fpsFrames++;
       fpsAccum += now - lastTime;
       lastTime = now;
@@ -807,7 +1032,6 @@ export default function Lenia() {
         fpsFrames = 0;
         fpsAccum = 0;
 
-        // Read back a small portion for mass estimate
         gl.bindFramebuffer(gl.FRAMEBUFFER, stateFB[curState]);
         gl.readPixels(0, 0, N, N, gl.RGBA, gl.FLOAT, gpu.readBuf);
         let m = 0;
@@ -864,25 +1088,33 @@ export default function Lenia() {
     );
   }
 
+  const isGhostPreset = !!PRESETS[preset]?.ghost;
+
   return (
     <div style={{ "--mono": "'JetBrains Mono', monospace", padding: "12px 10px", maxWidth: 1080, margin: "0 auto" }}>
       <div style={{ textAlign: "center", marginBottom: 10 }}>
-        <h2 style={{ fontSize: 14, fontWeight: 300, letterSpacing: "0.25em", color: "#f59e0b", fontFamily: "var(--mono)", margin: 0 }}>
-          ◉ LENIA <span style={{ fontSize: 8, color: "#5a6b8a", letterSpacing: "0.06em", fontWeight: 400 }}>GPU</span>
+        <h2 style={{ fontSize: 14, fontWeight: 300, letterSpacing: "0.25em", color: isGhostPreset ? "#ffbe0b" : "#f59e0b", fontFamily: "var(--mono)", margin: 0 }}>
+          ◉ LENIA {isGhostPreset && <span style={{ fontSize: 9, color: "#ffbe0b88", letterSpacing: "0.1em" }}>GHOST</span>}{" "}
+          <span style={{ fontSize: 8, color: "#5a6b8a", letterSpacing: "0.06em", fontWeight: 400 }}>GPU</span>
         </h2>
         <div style={{ fontSize: 8, color: "#3a4b6a", fontFamily: "var(--mono)", letterSpacing: "0.05em", marginTop: 3 }}>
           WebGL2 · Float Textures · Shader Bloom · {N}×{N} @ {fps}fps · frame {frameCount}
+          {isGhostPreset && seasonEnabled && (
+            <span style={{ color: seasonPhase > 0 ? "#ffbe0b66" : "#4ecdc466" }}>
+              {" "}· season {seasonPhase > 0 ? "☀" : "❄"} {(seasonPhase * 100).toFixed(0)}%
+            </span>
+          )}
         </div>
       </div>
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
         {/* ── Controls Panel ── */}
-        <div style={{ width: 220, background: "#0f1520", borderRadius: 10, border: "1px solid #1a2236", padding: 14, flexShrink: 0 }}>
+        <div style={{ width: 220, background: "#0f1520", borderRadius: 10, border: `1px solid ${isGhostPreset ? "#ffbe0b15" : "#1a2236"}`, padding: 14, flexShrink: 0 }}>
 
           {/* Species */}
           <div style={{ fontSize: 8, color: "#5a6b8a", letterSpacing: "0.08em", marginBottom: 5, fontFamily: "var(--mono)", textTransform: "uppercase" }}>Species</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginBottom: 6 }}>
-            {Object.entries(PRESETS).map(([id, p]) => (
+            {Object.entries(PRESETS).filter(([, p]) => !p.ghost).map(([id, p]) => (
               <button key={id} onClick={() => loadPreset(id)} style={{
                 padding: "3px 6px", borderRadius: 3, fontSize: 7, cursor: "pointer",
                 border: preset === id ? "1px solid #f59e0b44" : "1px solid #1a2236",
@@ -891,7 +1123,62 @@ export default function Lenia() {
               }}>{p.name}</button>
             ))}
           </div>
-          {PRESETS[preset] && <div style={{ fontSize: 7, color: "#3a4b6a", marginBottom: 8, fontFamily: "var(--mono)", fontStyle: "italic", lineHeight: 1.4 }}>{PRESETS[preset].desc}</div>}
+
+          {/* Ghost Species */}
+          <div style={{ fontSize: 8, color: "#ffbe0b88", letterSpacing: "0.08em", marginBottom: 5, marginTop: 4, fontFamily: "var(--mono)", textTransform: "uppercase" }}>✦ Ghost Species</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginBottom: 6 }}>
+            {Object.entries(PRESETS).filter(([, p]) => p.ghost).map(([id, p]) => (
+              <button key={id} onClick={() => loadPreset(id)} style={{
+                padding: "3px 6px", borderRadius: 3, fontSize: 7, cursor: "pointer",
+                border: preset === id ? "1px solid #ffbe0b55" : "1px solid #2a1f10",
+                background: preset === id ? "#ffbe0b18" : "#0f0d08",
+                color: preset === id ? "#ffbe0b" : "#8a7540", fontFamily: "var(--mono)",
+              }}>{p.name}</button>
+            ))}
+          </div>
+
+          {PRESETS[preset] && <div style={{ fontSize: 7, color: isGhostPreset ? "#8a754088" : "#3a4b6a", marginBottom: 8, fontFamily: "var(--mono)", fontStyle: "italic", lineHeight: 1.4 }}>{PRESETS[preset].desc}</div>}
+
+          {/* Ghost Controls */}
+          {isGhostPreset && (
+            <div style={{ marginBottom: 8, padding: 8, background: "#0d0b06", borderRadius: 6, border: "1px solid #2a1f10" }}>
+              <div style={{ fontSize: 8, color: "#ffbe0b88", letterSpacing: "0.08em", marginBottom: 6, fontFamily: "var(--mono)", textTransform: "uppercase" }}>✦ Ghost Controls</div>
+
+              {/* Landscape brush toggle */}
+              <div style={{ display: "flex", gap: 3, marginBottom: 6 }}>
+                <button onClick={() => setLandscapeBrush(false)} style={{
+                  flex: 1, padding: "3px", border: "1px solid #2a1f10", borderRadius: 3,
+                  background: !landscapeBrush ? "#ffbe0b15" : "#0a0f1a", color: !landscapeBrush ? "#ffbe0b" : "#5a6b8a",
+                  fontSize: 7, cursor: "pointer", fontFamily: "var(--mono)",
+                }}>Matter Brush</button>
+                <button onClick={() => setLandscapeBrush(true)} style={{
+                  flex: 1, padding: "3px", border: "1px solid #2a1f10", borderRadius: 3,
+                  background: landscapeBrush ? "#a78bfa15" : "#0a0f1a", color: landscapeBrush ? "#a78bfa" : "#5a6b8a",
+                  fontSize: 7, cursor: "pointer", fontFamily: "var(--mono)",
+                }}>σ Landscape</button>
+              </div>
+              {landscapeBrush && (
+                <div style={{ fontSize: 7, color: "#a78bfa66", marginBottom: 6, fontFamily: "var(--mono)", lineHeight: 1.4 }}>
+                  Click = loosen σ (more dissolution) · Shift = tighten σ (more coherence)
+                </div>
+              )}
+
+              {/* Season controls */}
+              <div style={{ display: "flex", gap: 3, marginBottom: 4 }}>
+                <button onClick={() => setSeasonEnabled(!seasonEnabled)} style={{
+                  flex: 1, padding: "3px", border: "1px solid #2a1f10", borderRadius: 3,
+                  background: seasonEnabled ? "#ffbe0b10" : "#0a0f1a", color: seasonEnabled ? "#ffbe0b" : "#5a6b8a",
+                  fontSize: 7, cursor: "pointer", fontFamily: "var(--mono)",
+                }}>{seasonEnabled ? "◉ Seasons" : "◯ Seasons"}</button>
+              </div>
+              {seasonEnabled && (
+                <>
+                  <Slider label="Rhythm" value={seasonSpeed} onChange={setSeasonSpeed} min={0.02} max={0.5} step={0.01} color="#ffbe0b" desc="How fast seasons turn" />
+                  <Slider label="Breath" value={seasonAmp} onChange={setSeasonAmp} min={0.05} max={0.5} step={0.01} color="#ffbe0b" desc="How deep the breathing" />
+                </>
+              )}
+            </div>
+          )}
 
           {/* Kernel */}
           <div style={{ fontSize: 8, color: "#5a6b8a", letterSpacing: "0.08em", marginBottom: 4, fontFamily: "var(--mono)", textTransform: "uppercase" }}>Kernel K(r)</div>
@@ -906,10 +1193,10 @@ export default function Lenia() {
           <div style={{ fontSize: 8, color: "#5a6b8a", letterSpacing: "0.08em", marginBottom: 4, fontFamily: "var(--mono)", textTransform: "uppercase" }}>Growth G(u)</div>
           <canvas ref={gVizRef} width={160} height={32} style={{ width: "100%", height: 24, borderRadius: 3, border: "1px solid #1a2236", marginBottom: 4 }} />
           <Slider label="μ" value={mu} onChange={setMu} min={0.01} max={0.4} step={0.001} color="#22d3ee" desc="Optimal density" />
-          <Slider label="σ" value={sigma} onChange={setSigma} min={0.001} max={0.06} step={0.0005} color="#22d3ee" desc="Growth width" />
+          <Slider label="σ" value={sigma} onChange={setSigma} min={0.001} max={0.06} step={0.0005} color="#22d3ee" desc={isGhostPreset ? "Base σ (landscape modulates this)" : "Growth width"} />
           <Slider label="Δt" value={dt} onChange={setDt} min={0.02} max={0.2} step={0.005} color="#22d3ee" />
           <Slider label="Speed" value={spf} onChange={v => setSpf(Math.round(v))} min={1} max={8} step={1} color="#22d3ee" />
-          <Slider label="Brush" value={brushSize} onChange={v => setBrushSize(Math.round(v))} min={2} max={25} step={1} color="#34d399" desc="Click=paint · Shift+click=erase" />
+          <Slider label="Brush" value={brushSize} onChange={v => setBrushSize(Math.round(v))} min={2} max={25} step={1} color="#34d399" desc={landscapeBrush ? "σ-landscape brush radius" : "Click=paint · Shift+click=erase"} />
 
           {/* Palette */}
           <div style={{ fontSize: 8, color: "#5a6b8a", letterSpacing: "0.08em", marginBottom: 4, marginTop: 4, fontFamily: "var(--mono)", textTransform: "uppercase" }}>Palette</div>
@@ -971,36 +1258,52 @@ export default function Lenia() {
           {/* Stats */}
           <div style={{ marginTop: 6, fontSize: 8, color: "#3a4b6a", fontFamily: "var(--mono)", textAlign: "center", lineHeight: 1.5 }}>
             R={R} · Δt={dt.toFixed(2)} · mass {mass.toFixed(0)}
+            {isGhostPreset && " · ✦ ghost"}
           </div>
 
           {/* Update rule */}
           <div style={{ marginTop: 8, padding: 8, background: "#0a0f1a", borderRadius: 5, border: "1px solid #1a2236" }}>
-            <div style={{ fontSize: 7, color: "#5a6b8a", letterSpacing: "0.08em", marginBottom: 4, fontFamily: "var(--mono)", textTransform: "uppercase" }}>Update Rule</div>
+            <div style={{ fontSize: 7, color: "#5a6b8a", letterSpacing: "0.08em", marginBottom: 4, fontFamily: "var(--mono)", textTransform: "uppercase" }}>
+              {isGhostPreset ? "Ghost Rule" : "Update Rule"}
+            </div>
             <div style={{ fontSize: 8, lineHeight: 1.7, color: "#3a4b6a", fontFamily: "var(--mono)" }}>
               U = K ∗ A <span style={{ color: "#2a3b5a" }}>(GPU conv)</span><br/>
+              {isGhostPreset ? (
+                <>σ(x,y) = σ_field(x,y) · season<br/></>
+              ) : null}
               G(u) = 2·exp(−(u−μ)²/2σ²) − 1<br/>
               A<sup>t+Δt</sup> = clip(A<sup>t</sup> + Δt·G(U), 0, 1)
+              {isGhostPreset && (
+                <><br/><span style={{ color: "#ffbe0b44" }}>color = f(A, memory, δ)</span></>
+              )}
             </div>
           </div>
         </div>
 
         {/* ── Canvas ── */}
-        <div style={{ background: "#0a0e18", borderRadius: 10, border: "1px solid #1a2236", padding: 8 }}>
+        <div style={{ background: "#0a0e18", borderRadius: 10, border: `1px solid ${isGhostPreset ? "#ffbe0b10" : "#1a2236"}`, padding: 8 }}>
           <canvas
             ref={canvasRef}
             onMouseDown={e => { e.preventDefault(); handleMouse(e, true); }}
-            onMouseMove={e => { if (mouseRef.current.active) handleMouse(e, true); }}
+            onMouseMove={e => { if (mouseRef.current.active || (landscapeBrush && e.buttons > 0)) handleMouse(e, true); }}
             onMouseUp={() => { mouseRef.current.active = false; }}
             onMouseLeave={() => { mouseRef.current.active = false; }}
             onContextMenu={e => e.preventDefault()}
             style={{
-              width: DISPLAY, height: DISPLAY, borderRadius: 6, display: "block", cursor: "crosshair",
-              boxShadow: "0 0 80px rgba(245,158,11,0.03), inset 0 0 60px rgba(0,0,0,0.3)",
+              width: DISPLAY, height: DISPLAY, borderRadius: 6, display: "block",
+              cursor: landscapeBrush ? "cell" : "crosshair",
+              boxShadow: isGhostPreset
+                ? "0 0 80px rgba(255,190,11,0.04), inset 0 0 60px rgba(0,0,0,0.3)"
+                : "0 0 80px rgba(245,158,11,0.03), inset 0 0 60px rgba(0,0,0,0.3)",
               imageRendering: "auto",
             }}
           />
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 5, fontSize: 7, color: "#2a3b5a", fontFamily: "var(--mono)" }}>
-            <span>Click=paint · Shift=erase · Toroidal boundaries</span>
+            <span>
+              {landscapeBrush
+                ? "Click=loosen σ · Shift=tighten σ · Sculpt the landscape"
+                : "Click=paint · Shift=erase · Toroidal boundaries"}
+            </span>
             <span>{PALETTES[palette].name} · {VIEW_MODES[viewMode]}</span>
           </div>
         </div>
