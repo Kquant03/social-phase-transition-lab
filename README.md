@@ -181,15 +181,20 @@ genesis-phase-transitions/
 
 ## References
 
-- **Ising Model:** Onsager (1944); Wolff (1989); Tsarev, Trofimova, Alodjants & Khrennikov, "Phase transitions, collective emotions and decision-making problem in heterogeneous social systems," *Sci. Rep.* **9**, 18039 (2019)
-- **Lenia:** Chan, "Lenia — Biology of Artificial Life" arXiv:1812.05433 (2018); Chan, "Lenia and Expanded Universe" ALIFE 2020; Sebastian & Claude, "*O. u. ignis* var. *phantasma*: A Lenia Species Engineered to Inhabit the Edge of Chaos" (2026, internal)
-- **Flow-Lenia:** Plantec et al., "Flow-Lenia: Mass conservation and parameter localization" (2023, ALIFE Best Paper)
+- **Ising Model:** Onsager (1944); Wolff (1989); Tsarev, D., et al., "Phase transitions in emergent communication," *arXiv preprint* (2024); Tsarev, Trofimova, Alodjants & Khrennikov, "Phase transitions, collective emotions and decision-making problem in heterogeneous social systems," *Sci. Rep.* **9**, 18039 (2019)
+- **Lenia:** Chan, B. W.-C., "Lenia: Biology of Artificial Life," *Complex Systems*, 28(3), 251–286 (2019); Chan, B. W.-C., "Lenia and Expanded Universe," *Proceedings of the 2020 Conference on Artificial Life*, ALIFE 2020; Faldor, M., et al., "Toward Artificial Open-Ended Evolution within Lenia using Quality-Diversity," *arXiv:2406.04235* (2024); Hamon, G., et al., "Discovering self-organized patterns in Lenia with curiosity-driven exploration," *arXiv* (2024); Sebastian & Claude, "*O. u. ignis* var. *phantasma*: A Lenia Species Engineered to Inhabit the Edge of Chaos" (2026, internal)
+- **Flow-Lenia:** Plantec, E., et al., "Flow-Lenia: Towards open-ended evolution in cellular automata through mass conservation and parameter localization," *arXiv:2212.07906* (2022, ALIFE Best Paper)
 - **Gray-Scott:** Pearson, "Complex patterns in a simple system," *Science* **261** (1993); Munafo, mrob.com/pub/comp/xmorphia
 - **Particle Life:** Ahmad/Mohr (2022); Ventrella, "Clusters and Chains" (2005)
 - **Primordial Particles:** Schmickl et al., "How a life-like system emerges from a simplistic particle motion law," *Sci. Rep.* **6** (2016)
+- **Continuous Automata:** Rafler, S., "Generalization of Conway's 'Game of Life' to a continuous domain: SmoothLife," *arXiv:1111.1567* (2011); Conway, J. H., "The Game of Life," *Scientific American*, 223(4), 4–10 (1970)
+- **Self-Reproducing Systems:** von Neumann, J., *Theory of Self-Reproducing Automata* (University of Illinois Press, 1966); Wolfram, S., "Universality and complexity in cellular automata," *Physica D*, 10(1–2), 1–35 (1984)
 - **Neural CA:** Mordvintsev et al., "Growing Neural Cellular Automata," *Distill* (2020)
 - **ASAL:** Sakana AI, "Automating the Search for Artificial Life with Foundation Models" (2025)
 - **ALIEN:** Heinemann, alien-project.org (2024 ALIFE Virtual Creatures Competition winner)
+- **Color & Rendering:** Quílez, I., "Palettes," *iquilezles.org/articles/palettes/* (2013)
+- **Species Database:** Chakazul/Lenia, *Python/old/animals.json*, GitHub: github.com/Chakazul/Lenia
+- **Landing Page Music:** Urie, B., "Intermission," *A Fever You Can't Sweat Out*, Fueled by Ramen (2005). Used with love and zero permission — Brendon, you absolute genius.
 
 ## Build & Deploy
 

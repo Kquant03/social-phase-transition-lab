@@ -30,6 +30,26 @@ function Loading() {
   );
 }
 
+// ---------- Fade helper (exponential ease-out) ----------
+function fadeAudio(audio, targetVolume, duration, onComplete) {
+  if (!audio) return;
+  const startVolume = audio.volume;
+  const startTime = performance.now();
+  const step = (now) => {
+    const elapsed = now - startTime;
+    const t = Math.min(1, elapsed / duration);
+    const ease = 1 - Math.pow(1 - t, 2);
+    audio.volume = startVolume + (targetVolume - startVolume) * ease;
+    if (t < 1) {
+      requestAnimationFrame(step);
+    } else {
+      if (targetVolume === 0) audio.pause();
+      if (onComplete) onComplete();
+    }
+  };
+  requestAnimationFrame(step);
+}
+
 export default function App() {
   const [active, setActive] = useState(null);
 
@@ -37,7 +57,6 @@ export default function App() {
     return <LandingPage onSelect={setActive} />;
   }
 
-  const sim = SIMS.find(s => s.id === active);
   const Comp = {
     ising: SocialPhaseTransitionLab,
     lenia: Lenia,
@@ -48,7 +67,6 @@ export default function App() {
 
   return (
     <div style={{ minHeight: "100vh", background: "#060a12", color: "#d4dae8" }}>
-      {/* Top nav bar */}
       <div style={{
         display: "flex", alignItems: "center", gap: 8, padding: "8px 16px",
         background: "#0a0f1a", borderBottom: "1px solid #1a2236",
@@ -81,12 +99,79 @@ export default function App() {
   );
 }
 
+// ---------- Landing Page with magical piano intermission ----------
 function LandingPage({ onSelect }) {
   const [hovered, setHovered] = useState(null);
+  const [musicEnabled, setMusicEnabled] = useState(false);
+  const [musicPlaying, setMusicPlaying] = useState(false);
+  const audioRef = useRef(null);
+  const musicEnabledRef = useRef(false); // ← fix: inside the component
   const heroCanvasRef = useRef(null);
-  const heroParticlesRef = useRef(null);
+  const navTimeoutRef = useRef(null);
 
-  // Live hero simulation - a gentle multi-species particle dance
+  // Create audio element and set up autoplay on first user interaction
+  useEffect(() => {
+    const audio = new Audio("/genesis-phase-transition/fever-intermission.mp3");
+    audio.loop = false;
+    audio.volume = 0;
+    audio.preload = "auto";
+    audioRef.current = audio;
+
+    const startMusic = () => {
+      if (audioRef.current && !musicEnabledRef.current) {
+        musicEnabledRef.current = true;
+        audioRef.current.play().then(() => {
+          fadeAudio(audioRef.current, 0.28, 1800);
+          setMusicEnabled(true);
+          setMusicPlaying(true);
+        }).catch(e => console.log("Audio play blocked – user interaction required"));
+      }
+      window.removeEventListener("click", startMusic);
+    };
+    window.addEventListener("click", startMusic);
+
+    return () => {
+      window.removeEventListener("click", startMusic);
+      if (navTimeoutRef.current) clearTimeout(navTimeoutRef.current);
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
+
+  // Toggle mute / unmute
+  const toggleMusic = () => {
+    if (!audioRef.current) return;
+    if (musicPlaying) {
+      fadeAudio(audioRef.current, 0, 500, () => {
+        if (audioRef.current) audioRef.current.pause();
+        setMusicPlaying(false);
+      });
+    } else {
+      if (audioRef.current.currentTime >= audioRef.current.duration - 0.5) {
+        audioRef.current.currentTime = 0;
+      }
+      audioRef.current.play().then(() => {
+        fadeAudio(audioRef.current, 0.28, 800);
+        setMusicPlaying(true);
+      }).catch(e => console.log("Play failed", e));
+    }
+  };
+
+  // Fade out and navigate when a simulation card is clicked
+  const handleSelectWithFade = (simId) => {
+    if (navTimeoutRef.current) return;
+    if (audioRef.current && musicPlaying) {
+      fadeAudio(audioRef.current, 0, 700, () => {
+        onSelect(simId);
+      });
+    } else {
+      onSelect(simId);
+    }
+  };
+
+  // Hero particle simulation
   useEffect(() => {
     const canvas = heroCanvasRef.current;
     if (!canvas) return;
@@ -95,13 +180,9 @@ function LandingPage({ onSelect }) {
     const N = 180;
     const TYPES = 5;
     const colors = [
-      [78, 205, 196, 0.7],   // teal
-      [167, 139, 250, 0.7],  // purple
-      [245, 158, 11, 0.6],   // amber
-      [236, 72, 153, 0.6],   // pink
-      [52, 211, 153, 0.6],   // emerald
+      [78, 205, 196, 0.7], [167, 139, 250, 0.7],
+      [245, 158, 11, 0.6], [236, 72, 153, 0.6], [52, 211, 153, 0.6]
     ];
-    // Init
     const px = new Float32Array(N), py = new Float32Array(N);
     const vx = new Float32Array(N), vy = new Float32Array(N);
     const types = new Uint8Array(N);
@@ -112,19 +193,17 @@ function LandingPage({ onSelect }) {
       vy[i] = (Math.random() - 0.5) * 0.5;
       types[i] = Math.floor(Math.random() * TYPES);
     }
-    // Interaction matrix - gentle orbits
     const mat = [
-      [ 0.0,  0.3, -0.1,  0.2, -0.2],
-      [-0.2,  0.0,  0.3, -0.1,  0.2],
-      [ 0.2, -0.2,  0.0,  0.3, -0.1],
-      [-0.1,  0.2, -0.2,  0.0,  0.3],
-      [ 0.3, -0.1,  0.2, -0.2,  0.0],
+      [0.0, 0.3, -0.1, 0.2, -0.2],
+      [-0.2, 0.0, 0.3, -0.1, 0.2],
+      [0.2, -0.2, 0.0, 0.3, -0.1],
+      [-0.1, 0.2, -0.2, 0.0, 0.3],
+      [0.3, -0.1, 0.2, -0.2, 0.0],
     ];
     const rMax = 120, beta = 0.3, friction = 0.6;
 
     let raf;
     const loop = () => {
-      // Physics
       for (let i = 0; i < N; i++) {
         let fx = 0, fy = 0;
         for (let j = 0; j < N; j++) {
@@ -136,8 +215,8 @@ function LandingPage({ onSelect }) {
           if (d > rMax || d < 0.5) continue;
           const r = d / rMax, nx = dx/d, ny = dy/d;
           let f;
-          if (r < beta) { f = r/beta - 1; }
-          else { f = mat[types[i]][types[j]] * (1 - Math.abs(1+beta-2*r)/(1-beta)); }
+          if (r < beta) f = r/beta - 1;
+          else f = mat[types[i]][types[j]] * (1 - Math.abs(1+beta-2*r)/(1-beta));
           fx += f * nx; fy += f * ny;
         }
         vx[i] = vx[i] * friction + fx * 0.4;
@@ -148,19 +227,16 @@ function LandingPage({ onSelect }) {
         py[i] = ((py[i] + vy[i]) % H + H) % H;
       }
 
-      // Render
       ctx.fillStyle = "rgba(6,10,18,0.08)";
       ctx.fillRect(0, 0, W, H);
       for (let i = 0; i < N; i++) {
         const c = colors[types[i]];
         const speed = Math.sqrt(vx[i]*vx[i] + vy[i]*vy[i]);
         const a = c[3] * Math.min(1, 0.3 + speed * 0.4);
-        // Glow
         ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${a * 0.12})`;
         ctx.beginPath();
         ctx.arc(px[i], py[i], 8 + speed * 2, 0, Math.PI * 2);
         ctx.fill();
-        // Core
         ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${a})`;
         ctx.beginPath();
         ctx.arc(px[i], py[i], 1.5 + speed * 0.3, 0, Math.PI * 2);
@@ -178,7 +254,26 @@ function LandingPage({ onSelect }) {
       display: "flex", flexDirection: "column", alignItems: "center",
       fontFamily: "'DM Sans', sans-serif",
     }}>
-      {/* Hero with live simulation backdrop */}
+      {/* Music control button */}
+      <div style={{
+        position: "fixed", bottom: 24, right: 24, zIndex: 200,
+        background: "#0a0f1acc", backdropFilter: "blur(12px)",
+        padding: "8px", borderRadius: 40, border: "1px solid #2a3456",
+        cursor: "pointer", transition: "all 0.2s",
+      }}
+      onClick={toggleMusic}
+      onMouseEnter={e => e.currentTarget.style.background = "#141e2ecc"}
+      onMouseLeave={e => e.currentTarget.style.background = "#0a0f1acc"}
+      >
+        <div style={{
+          width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 16, color: musicPlaying ? "#4ecdc4" : "#8a9bba",
+        }}>
+          {musicPlaying ? "🎵" : "🔇"}
+        </div>
+      </div>
+
+      {/* Hero section with canvas */}
       <div style={{ position: "relative", width: "100%", overflow: "hidden" }}>
         <canvas
           ref={heroCanvasRef}
@@ -186,18 +281,13 @@ function LandingPage({ onSelect }) {
           height={400}
           style={{
             position: "absolute", top: 0, left: "50%", transform: "translateX(-50%)",
-            width: "100%", maxWidth: 960, height: 400,
-            opacity: 0.6,
+            width: "100%", maxWidth: 960, height: 400, opacity: 0.6,
             maskImage: "radial-gradient(ellipse 80% 90% at 50% 50%, black 30%, transparent 70%)",
             WebkitMaskImage: "radial-gradient(ellipse 80% 90% at 50% 50%, black 30%, transparent 70%)",
           }}
         />
         <div style={{ position: "relative", textAlign: "center", padding: "80px 20px 40px", maxWidth: 700, margin: "0 auto", zIndex: 1 }}>
-          <div style={{
-            fontSize: 11, letterSpacing: "0.35em", color: "#5a6b8a",
-            fontFamily: "'JetBrains Mono', monospace", marginBottom: 20,
-            textTransform: "uppercase",
-          }}>
+          <div style={{ fontSize: 11, letterSpacing: "0.35em", color: "#5a6b8a", fontFamily: "'JetBrains Mono', monospace", marginBottom: 20, textTransform: "uppercase" }}>
             Replete AI · Teármann Research Ecosystem
           </div>
           <h1 style={{
@@ -209,17 +299,11 @@ function LandingPage({ onSelect }) {
           }}>
             GENESIS
           </h1>
-          <div style={{
-            fontSize: 14, color: "#8a9bba", marginTop: 16, lineHeight: 1.7,
-            fontFamily: "'DM Sans', sans-serif", fontWeight: 300,
-          }}>
+          <div style={{ fontSize: 14, color: "#8a9bba", marginTop: 16, lineHeight: 1.7, fontFamily: "'DM Sans', sans-serif", fontWeight: 300 }}>
             A multi-dimensional artificial life laboratory.<br />
             Five substrates. One garden. Infinite structures.
           </div>
-          <div style={{
-            marginTop: 20, fontSize: 10, color: "#4a5b7a",
-            fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.08em",
-          }}>
+          <div style={{ marginTop: 20, fontSize: 10, color: "#4a5b7a", fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.08em" }}>
             Ising · Lenia · Gray-Scott · Particle Life · Primordial Particles
           </div>
           <a
@@ -250,10 +334,10 @@ function LandingPage({ onSelect }) {
         display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
         gap: 14, maxWidth: 960, width: "100%", padding: "20px 20px 80px",
       }}>
-        {SIMS.map((s, i) => (
+        {SIMS.map(s => (
           <button
             key={s.id}
-            onClick={() => onSelect(s.id)}
+            onClick={() => handleSelectWithFade(s.id)}
             onMouseEnter={() => setHovered(s.id)}
             onMouseLeave={() => setHovered(null)}
             style={{
@@ -277,17 +361,14 @@ function LandingPage({ onSelect }) {
                 transition: "color 0.3s",
               }}>{s.label}</span>
             </div>
-            <div style={{
-              fontSize: 12, color: "#5a6b8a", lineHeight: 1.6,
-              fontFamily: "'DM Sans', sans-serif", fontWeight: 300,
-            }}>
+            <div style={{ fontSize: 12, color: "#5a6b8a", lineHeight: 1.6, fontFamily: "'DM Sans', sans-serif", fontWeight: 300 }}>
               {s.desc}
             </div>
             <div style={{
               marginTop: 14, fontSize: 9, color: s.color,
-              fontFamily: "'JetBrains Mono', monospace",
-              letterSpacing: "0.1em", textTransform: "uppercase",
-              opacity: hovered === s.id ? 1 : 0.4, transition: "opacity 0.3s",
+              fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.1em",
+              textTransform: "uppercase", opacity: hovered === s.id ? 1 : 0.4,
+              transition: "opacity 0.3s",
             }}>
               ENTER SUBSTRATE →
             </div>
