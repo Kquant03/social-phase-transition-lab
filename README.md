@@ -194,7 +194,7 @@ genesis-phase-transitions/
 - **ALIEN:** Heinemann, alien-project.org (2024 ALIFE Virtual Creatures Competition winner)
 - **Color & Rendering:** Quílez, I., "Palettes," *iquilezles.org/articles/palettes/* (2013)
 - **Species Database:** Chakazul/Lenia, *Python/old/animals.json*, GitHub: github.com/Chakazul/Lenia
-- **Landing Page Music:** Urie, B., "Intermission," *A Fever You Can't Sweat Out*, Fueled by Ramen (2005). Used with love and zero permission — Brendon, you absolute genius.
+- **Landing Page Music:** Urie, B., "Intermission," *A Fever You Can't Sweat Out*, Fueled by Ramen (2005). Used with love and zero permission — Brendon, you absolute genius. (I DO NOT OWN THIS TRACK YOU CANNOT USE THIS PART COMMERCIALLY PLEASE DON'T DO THAT LOL)
 
 ## Build & Deploy
 
